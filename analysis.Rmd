@@ -1,0 +1,62 @@
+---
+title: "Methylation analysis"
+output: html_notebook
+---
+
+Methylation data was collected by xxx and processed by xxx. 
+**Collaborators:** Shannon Dillon, Tony Iaculo, xxx
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+## Initial data import and exploration
+
+Import workflow adjusted from https://readxl.tidyverse.org/articles/readxl-workflows.html
+
+### Load libraries
+```{r}
+library(tidyverse)
+library(readxl)
+```
+
+### Path to data
+```{r}
+data_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/biochem/CC7+8  biochem for Yutao 05_02_21.xlsx"
+
+```
+
+### Read data and cache CSV snapshot
+Note: CSV snapshot makes inspecting the data and problem solving easy to do from the terminal rather than having to have excel open somewhere. 
+```{r}
+biochem_xl <- read_excel(data_path, col_names = FALSE) %>% 
+  write_csv("data/biochem_raw.csv")
+```
+Hmm. Need to work with multiple sheets.
+Define function to read excel sheet and write to csv
+```{r}
+read_then_csv <- function(sheet, path) {
+  path %>%
+    read_excel(sheet = sheet) %>% 
+    write_csv(paste0("data/biochem-", sheet, ".csv"))
+}
+```
+Map on to individual sheets
+```{r}
+data_path %>% 
+  excel_sheets() %>% 
+  set_names() %>% 
+  map(read_then_csv, path = data_path)
+```
+We need to turn all this into a tidy data frame. Columns need to be ID, Room, Cohort, Day, Treatment, ... + biochem. Let's start by using the cheat sheet.
+```{r}
+biochem <- biochem_xl %>% 
+  select(-1:-2) %>% 
+  slice(1:3) %>%
+  t() %>%
+  as_tibble() %>%
+  rename('ID' = 1, 'cohort' = 2, 'room' = 3) %>%
+  mutate_if(is.numeric, as.character)
+
+
+```
+
+
