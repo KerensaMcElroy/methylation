@@ -72,7 +72,15 @@ features <- data_path %>%
   keep(names(.)!="cheat sheet") %>%
   map_df(~ read_excel(path = data_path, sheet = .x, range =  anchored("A4", c(13, 25)), na='.', col_names=names(col_names)), .id = "feature") %>%
   rename('days' = 'ID') %>%
-  pivot_longer()
-```
+  mutate(treatment = case_when(
+    days <=5 ~ "pre",
+    days > 5 && days <= 12 ~ "hot",
+    days > 12 && days <= 17 ~ "recovery",
+    days > 17 ~ "pens"
+    )) %>%
+  pivot_longer(cols = 3:26, names_to = 'ID') %>%
+  full_join(biochem, by = 'ID') %>%
+  pivot_wider(names_from = 'feature', values_from = 'value')
 
+```
 
