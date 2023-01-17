@@ -55,8 +55,24 @@ biochem <- biochem_xl %>%
   as_tibble() %>%
   rename('ID' = 1, 'cohort' = 2, 'room' = 3) %>%
   mutate_if(is.numeric, as.character)
+```
 
+Now, get the feature data from each individual biochem sheet
+```{r}
+names <- data_path %>% excel_sheets() %>% set_names() %>% keep(names(.) != "cheat sheet")
+```
+```{r}
+col_names <- read_excel(path=data_path, sheet=2,range="A1:Y1",col_names=TRUE)
+```
 
+```{r}
+features <- data_path %>%
+  excel_sheets() %>%
+  set_names() %>% 
+  keep(names(.)!="cheat sheet") %>%
+  map_df(~ read_excel(path = data_path, sheet = .x, range =  anchored("A4", c(13, 25)), na='.', col_names=names(col_names)), .id = "feature") %>%
+  rename('days' = 'ID') %>%
+  pivot_longer()
 ```
 
 
