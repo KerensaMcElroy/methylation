@@ -1,6 +1,8 @@
 ---
 title: "Methylation analysis"
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
 Methylation data was collected by xxx and processed by xxx. 
@@ -13,64 +15,65 @@ This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute
 Import workflow adjusted from https://readxl.tidyverse.org/articles/readxl-workflows.html
 
 ### Load libraries
-```{r}
+```{r echo=T, results='hide', message=F}
 library(tidyverse)
 library(readxl)
 ```
 
 ### Path to data
-```{r}
+```{r echo=T, results='hide'}
 data_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/biochem/CC7+8  biochem for Yutao 05_02_21.xlsx"
 
 ```
 
-### Read data and cache CSV snapshot
+### Cache CSV snapshot for each sheet
 Note: CSV snapshot makes inspecting the data and problem solving easy to do from the terminal rather than having to have excel open somewhere. 
-```{r}
-biochem_xl <- read_excel(data_path, col_names = FALSE) %>% 
-  write_csv("data/biochem_raw.csv")
-```
-Hmm. Need to work with multiple sheets.
-Define function to read excel sheet and write to csv
-```{r}
+
+Defining function to read excel sheet and write to csv
+```{r echo=T, results='hide'}
 read_then_csv <- function(sheet, path) {
   path %>%
     read_excel(sheet = sheet) %>% 
     write_csv(paste0("data/biochem-", sheet, ".csv"))
 }
 ```
+
 Map on to individual sheets
-```{r}
+```{r echo=T, results='hide', message=F}
 data_path %>% 
   excel_sheets() %>% 
   set_names() %>% 
-  map(read_then_csv, path = data_path)
+  map(read_then_csv, path = data_path) %>%
+  invisible()
 ```
-We need to turn all this into a tidy data frame. Columns need to be ID, Room, Cohort, Day, Treatment, ... + biochem. Let's start by using the cheat sheet.
-```{r}
-biochem <- biochem_xl %>% 
+We need to turn all this into a tidy data frame. Columns need to be ID, room, cohort, day, treatment, and biochem features. Starting by using the cheat sheet to get ID, cohort, and room. 
+```{r echo=T, warning=F, message=F}
+features <- data_path %>%
+  read_excel(col_names = FALSE) %>% 
   select(-1:-2) %>% 
   slice(1:3) %>%
   t() %>%
   as_tibble() %>%
   rename('ID' = 1, 'cohort' = 2, 'room' = 3) %>%
   mutate_if(is.numeric, as.character)
+print(features)
 ```
-
-Now, get the feature data from each individual biochem sheet
-```{r}
-names <- data_path %>% excel_sheets() %>% set_names() %>% keep(names(.) != "cheat sheet")
-```
-```{r}
+Now, we read in the first row of a single biochem sheet so that we can get the column names. This is necessary because due to the formatting of the excel sheets, we need to exclude the first few rows, which discards the column names.
+```{r echo=T, results='hide'}
 col_names <- read_excel(path=data_path, sheet=2,range="A1:Y1",col_names=TRUE)
 ```
+Now we: 
 
+* select the data range on each sheet and use map_df to combine into a single data frame,
+* discard 'cheat sheet' from the list of names,
+* use mutate to add a treatment column,
+* use pivot and join functions to format resulting tibble
 ```{r}
-features <- data_path %>%
+biochem <- data_path %>%
   excel_sheets() %>%
   set_names() %>% 
   keep(names(.)!="cheat sheet") %>%
-  map_df(~ read_excel(path = data_path, sheet = .x, range =  anchored("A4", c(13, 25)), na='.', col_names=names(col_names)), .id = "feature") %>%
+  map_df(~ read_excel(path = data_path, sheet = .x, range =  anchored("A4", c(13, 25)), na='.', col_names=names(col_names)), .id = "biochem") %>%
   rename('days' = 'ID') %>%
   mutate(treatment = case_when(
     days <=5 ~ "pre",
@@ -79,8 +82,8 @@ features <- data_path %>%
     days > 17 ~ "pens"
     )) %>%
   pivot_longer(cols = 3:26, names_to = 'ID') %>%
-  full_join(biochem, by = 'ID') %>%
-  pivot_wider(names_from = 'feature', values_from = 'value')
-
+  full_join(features, by = 'ID') %>%
+  pivot_wider(names_from = 'biochem', values_from = 'value')
+print(biochem)
 ```
 
