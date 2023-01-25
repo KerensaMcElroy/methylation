@@ -1,0 +1,52 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+The many files of methylation data are too big when combined to work with tidyverse verbs. So, this is an attempt to turn them into a SQLite database and use dplyr to work with the data in the tidyverse framework. 
+```{r}
+library(tidyverse)
+library(dplyr)
+library(DBI)
+
+data <- DBI::dbConnect(RSQLite::SQLite(), dbname = "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/meth_db.sqlite")
+
+```
+
+```{r warning=FALSE}
+add_csv_db <- function(path, db){
+  file_name <- basename(path)
+  print(file_name)
+  parts <- str_split(file_name, '_', simplify = TRUE)
+  treatment <- as.character(str_extract(parts[3],"[0-9]+"))
+  chromosome <- as.character(str_extract(parts[4], "[0-9]+"))
+  ID = as.character(str_extract(parts[5], "[0-9]+"))
+  d <- read_csv(path, col_types = "d", na = 'nan', col_names = FALSE) %>%
+    mutate(ID=ID) %>%
+    mutate(chromosome=chromosome) %>%
+    mutate(treatment=treatment)
+    
+  
+  dbWriteTable(db, "meth_data", d, append = T)
+}
+```
+
+```{r}
+meth_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means"
+csv_names <- list.files(path = meth_path, pattern = "*window_mean_.*.txt", full.names = TRUE)
+walk(csv_names, add_csv_db, db = data)
+tbl(data, "meth_data") %>% 
+  collect()
+```
+```{r}
+data <- data %>%
+  separate(file_name, sep = '_', into = c("treatment","chromosome","ID"), fill="left") %>%
+  mutate(ID = str_extract(ID, "[0-9]+")) %>%
+  mutate(chromosome = str_extract(chromosome, "[0-9]+")) %>%
+  mutate(treatment = case_when(
+    treatment == "HE3" ~ "recovery",treatment == "HE2" ~ "hot",
+    treatment == "HE1" ~ "pre",
+    )) 
+```
+
+

@@ -5,12 +5,13 @@ output:
     df_print: paged
 ---
 
+# Methylation and biochemical trait data analysis {.tabset}
 Methylation data was collected by xxx and processed by xxx. 
 **Collaborators:** Shannon Dillon, Tony Iaculo, xxx
 
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
 
-## Initial data import and exploration
+## Data import and tidying
 
 Import workflow adjusted from https://readxl.tidyverse.org/articles/readxl-workflows.html
 
@@ -76,14 +77,123 @@ biochem <- data_path %>%
   map_df(~ read_excel(path = data_path, sheet = .x, range =  anchored("A4", c(13, 25)), na='.', col_names=names(col_names)), .id = "biochem") %>%
   rename('days' = 'ID') %>%
   mutate(treatment = case_when(
-    days <=5 ~ "pre",
-    days > 5 && days <= 12 ~ "hot",
-    days > 12 && days <= 17 ~ "recovery",
-    days > 17 ~ "pens"
+    days > 17 ~ "pens",
+    days > 12 ~ "recovery",
+    days > 5  ~ "hot",
+    days <=5 ~ "pre"
     )) %>%
   pivot_longer(cols = 3:26, names_to = 'ID') %>%
   full_join(features, by = 'ID') %>%
   pivot_wider(names_from = 'biochem', values_from = 'value')
 print(biochem)
 ```
+## Exploration and visualisation
 
+### Missing data
+Are there any biochem values with unusual quantities of missing values? Not particularly...
+```{r}
+biochem %>% summarise(across(everything(), ~ sum(is.na(.))))
+```
+```{r}
+biochem %>% group_by(days) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(days) %>% summarise(across(everything(), ~ n()))
+
+```
+```{r}
+biochem %>% group_by(room) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(room) %>% summarise(across(everything(), ~ n()))
+
+```
+```{r}
+biochem %>% group_by(cohort) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(cohort) %>% summarise(across(everything(), ~ n()))
+```
+```{r}
+biochem %>% group_by(treatment) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(treatment) %>% summarise(across(everything(), ~ n()))
+```
+
+```{r}
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ n()))
+```
+It appears to be individual animals accounting for the majority of missing data, specifically IDs 6, 15, 23, and 27. Will exclude from further analysis.
+
+```{r}
+biochem <- biochem %>%
+  filter(!ID %in% c('6','15','23','27'))
+```
+Check it's worked:
+```{r}
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ n()))
+```
+Looks good.
+
+### Methylation data
+```{r}
+meth_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means"
+
+positions <-
+  list.files(path = meth_path, pattern = "*window_positions*csv") %>% 
+  map_df(~read_csv(.)) %>%
+df
+position_files <- fs::dir_ls(path = meth_path, glob = "*window_positions*csv")
+positions <- read_csv(position_files) %>%
+  separate(chrm.window, sep='\\.', into = c("chromosome","window")) %>%
+  mutate(chromosome = str_extract(chromosome, "[0-9]+")) 
+```
+```{r}
+install.packages("dtplyr")
+library(dtplyr)
+```
+
+```{r}
+windows <-
+  list.files(path = meth_path, pattern = "*window_mean.*ia13.txt", full.names = TRUE) %>% 
+  map_df(~read_csv(.x, id = 'file_name', col_names = FALSE)) 
+windows <- lazy_dt(windows)
+windows <- windows %>%
+  separate(file_name, sep = '_', into = c("treatment","chromosome","ID"), fill="left") %>%
+  mutate(ID = str_extract(ID, "[0-9]+")) %>%
+  mutate(chromosome = str_extract(chromosome, "[0-9]+")) %>%
+  mutate(treatment = case_when(
+    treatment == "HE3" ~ "recovery",
+    treatment == "HE2" ~ "hot",
+    treatment == "HE1" ~ "pre",
+    )) %>%
+  as_tibble()
+```
+
+
+
+
+### Visual exploration
+
+mutate treatment so it displays in correct order on plots
+```{r}
+biochem <- biochem %>%  mutate(treatment = fct_reorder(treatment, days, .fun='median'))
+```
+
+```{r}
+jitter_plots <- function(x, y) {
+     ggplot(biochem, aes(x = .data[[x]], y = .data[[y]], color=cohort) ) +
+      geom_jitter(height=0, width=.2) +
+      theme_bw()
+}
+```
+
+
+```{r}
+biochems <- biochem %>%
+  select(!c("ID","days","treatment","room","cohort")) %>%
+  names()
+
+j_plots = map(biochems, ~jitter_plots("treatment", .x) )
+j_plots
+```
+
+```{r plot.show=TRUE}
+jitter_plots("treatment", "A2G_ratio")
+```
+This needs checking out. Different measurement approach for the two cohorts?
