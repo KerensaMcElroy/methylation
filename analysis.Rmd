@@ -17,14 +17,17 @@ Import workflow adjusted from https://readxl.tidyverse.org/articles/readxl-workf
 
 ### Load libraries
 ```{r echo=T, results='hide', message=F}
+library(conflicted)
 library(tidyverse)
 library(readxl)
+library(mixOmics)
+library(janitor)
 ```
 
 ### Path to data
 ```{r echo=T, results='hide'}
 data_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/biochem/CC7+8  biochem for Yutao 05_02_21.xlsx"
-
+map_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/processed_data/Sample  key.xlsx" #data for mapping between different animal IDs
 ```
 
 ### Cache CSV snapshot for each sheet
@@ -44,14 +47,14 @@ Map on to individual sheets
 data_path %>% 
   excel_sheets() %>% 
   set_names() %>% 
-  map(read_then_csv, path = data_path) %>%
+  purrr::map(read_then_csv, path = data_path) %>%
   invisible()
 ```
 We need to turn all this into a tidy data frame. Columns need to be ID, room, cohort, day, treatment, and biochem features. Starting by using the cheat sheet to get ID, cohort, and room. 
 ```{r echo=T, warning=F, message=F}
 features <- data_path %>%
   read_excel(col_names = FALSE) %>% 
-  select(-1:-2) %>% 
+  dplyr::select(-1:-2) %>% 
   slice(1:3) %>%
   t() %>%
   as_tibble() %>%
@@ -59,6 +62,22 @@ features <- data_path %>%
   mutate_if(is.numeric, as.character)
 print(features)
 ```
+
+Convert numeric IDs back to the animal IDs that were used for biochem data.
+```{r}
+map_path %>%
+  read_excel() %>% 
+    write_csv("data/sample_key.csv") #generate csv for future quick view
+
+animal_map <- read_excel(map_path, col_names = TRUE) %>%
+  dplyr::select(`window mean ID`, `Animal ID`) %>%
+  distinct() %>%
+  drop_na() %>%
+  clean_names() %>%
+  mutate(window_mean_id = as.character(window_mean_id),
+         animal_id = as.character(animal_id))
+```
+
 Now, we read in the first row of a single biochem sheet so that we can get the column names. This is necessary because due to the formatting of the excel sheets, we need to exclude the first few rows, which discards the column names.
 ```{r echo=T, results='hide'}
 col_names <- read_excel(path=data_path, sheet=2,range="A1:Y1",col_names=TRUE)
@@ -86,6 +105,9 @@ biochem <- data_path %>%
   full_join(features, by = 'ID') %>%
   pivot_wider(names_from = 'biochem', values_from = 'value')
 print(biochem)
+
+biochem_meth <- biochem %>%
+  dplyr::filter(days %in% c(5, 12, 38))
 ```
 ## Exploration and visualisation
 
@@ -121,7 +143,7 @@ It appears to be individual animals accounting for the majority of missing data,
 
 ```{r}
 biochem <- biochem %>%
-  filter(!ID %in% c('6','15','23','27'))
+  dplyr::filter(!ID %in% c('6','15','23','27'))
 ```
 Check it's worked:
 ```{r}
@@ -129,44 +151,6 @@ biochem %>% group_by(ID) %>% summarise(across(everything(), ~ sum(is.na(.))))
 biochem %>% group_by(ID) %>% summarise(across(everything(), ~ n()))
 ```
 Looks good.
-
-### Methylation data
-```{r}
-meth_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means"
-
-positions <-
-  list.files(path = meth_path, pattern = "*window_positions*csv") %>% 
-  map_df(~read_csv(.)) %>%
-df
-position_files <- fs::dir_ls(path = meth_path, glob = "*window_positions*csv")
-positions <- read_csv(position_files) %>%
-  separate(chrm.window, sep='\\.', into = c("chromosome","window")) %>%
-  mutate(chromosome = str_extract(chromosome, "[0-9]+")) 
-```
-```{r}
-install.packages("dtplyr")
-library(dtplyr)
-```
-
-```{r}
-windows <-
-  list.files(path = meth_path, pattern = "*window_mean.*ia13.txt", full.names = TRUE) %>% 
-  map_df(~read_csv(.x, id = 'file_name', col_names = FALSE)) 
-windows <- lazy_dt(windows)
-windows <- windows %>%
-  separate(file_name, sep = '_', into = c("treatment","chromosome","ID"), fill="left") %>%
-  mutate(ID = str_extract(ID, "[0-9]+")) %>%
-  mutate(chromosome = str_extract(chromosome, "[0-9]+")) %>%
-  mutate(treatment = case_when(
-    treatment == "HE3" ~ "recovery",
-    treatment == "HE2" ~ "hot",
-    treatment == "HE1" ~ "pre",
-    )) %>%
-  as_tibble()
-```
-
-
-
 
 ### Visual exploration
 
@@ -186,10 +170,10 @@ jitter_plots <- function(x, y) {
 
 ```{r}
 biochems <- biochem %>%
-  select(!c("ID","days","treatment","room","cohort")) %>%
+  dplyr::select(!c("ID","days","treatment","room","cohort")) %>%
   names()
 
-j_plots = map(biochems, ~jitter_plots("treatment", .x) )
+j_plots = purrr::map(biochems, ~jitter_plots("treatment", .x) )
 j_plots
 ```
 
@@ -197,3 +181,126 @@ j_plots
 jitter_plots("treatment", "A2G_ratio")
 ```
 This needs checking out. Different measurement approach for the two cohorts?
+
+
+### Methylation data
+## issues with this analysis due to size. Creating database to work with instead.
+```{r warning=FALSE}
+### database approach
+library(tidyverse)
+library(stringr)
+library(DBI)
+
+meth_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means"
+csv_names <- list.files(path = meth_path, pattern = "*window_mean_.*chrm29_.*.txt", full.names = TRUE)
+
+# Create a database connection
+con <- DBI::dbConnect(RSQLite::SQLite(), dbname = "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/meth_db.sqlite")
+```
+```{r warning=FALSE}
+# Define the add_csv_db function
+add_csv_db <- function(file, path, db) {
+  file_name <- basename(file)
+  parts <- str_split(file_name, "_", simplify = TRUE)
+  treatment <- as.character(str_extract(parts[3], "\\d+"))
+  chromosome <- as.character(str_extract(parts[4], "\\d+"))
+  ID <- as.character(str_extract(parts[5], "\\d+"))
+
+  # Get animal ID from animal_map
+  animal_id <- animal_map$animal_id[match(ID, animal_map$window_mean_id)]
+  
+  positions <- read_csv(file.path(path, paste0("window_positions_chrm", chromosome, ".csv")), na = "nan", col_names = TRUE) %>%
+    mutate(ID = animal_id) %>%
+    rownames_to_column()
+
+  d <- read_csv(file, col_types = "d", na = "nan", col_names = "methylation") %>%
+    mutate(ID = animal_id) %>%
+    mutate(chromosome = chromosome) %>%
+    mutate(treatment = case_when(
+      treatment == "3" ~ "pens",
+      treatment == "2" ~ "hot",
+      treatment == "1" ~ "pre"
+    )) %>%
+    rownames_to_column() %>%
+    full_join(positions) %>%
+    drop_na(methylation) %>%
+    dplyr::select(-rowname)
+  
+  dbWriteTable(db, "meth_data", d, append = TRUE)
+}
+```
+```{r}
+# Iterate over the CSV files and process them
+walk(csv_names, add_csv_db, path = meth_path, db = con)
+
+```
+```{r}
+pca_data <- tbl(con, 'meth_data') %>%
+  dplyr::select("methylation", "ID","treatment", "winMin") %>% 
+  collect() 
+```
+```{r}
+pca_wide <- pca_data %>% pivot_wider(values_from = "methylation", names_from = "winMin")
+```
+
+```{r}
+pca_wide <- pca_wide %>% 
+  dplyr::select(where(~mean(is.na(.)) < .2))
+```
+
+  
+```{r}
+var_df <- pca_wide %>% 
+  dplyr::select(-ID,-treatment) %>%
+  summarise(across(.cols = everything(), ~var(.x, na.rm = TRUE))) %>% 
+  pivot_longer(cols = everything()) %>% 
+  arrange(desc(value)) %>%
+  mutate(order = 1:n())
+
+var_1000 = var_df %>%
+  slice_max(n = 1000, order_by = value)
+```
+
+```{r}
+hist_plot <- var_df %>% 
+  mutate(included= case_when(order <= 1000 ~ TRUE, .default = FALSE)) %>%
+           ggplot(aes(x = value, fill = included)) +
+           geom_histogram(bins=100)  +
+           scale_fill_brewer(palette="Accent")
+
+hist_plot
+```
+
+```{r}
+for_pca <- pca_wide %>% 
+  dplyr::select(var_1000$name)
+```
+```{r}
+result.pca.multi <- for_pca %>%
+  pca(scale=TRUE,ncomp=4,center = TRUE)
+```
+```{r}
+plotIndiv(result.pca.multi)
+```
+```{r}
+plotIndiv(result.pca.multi,
+          comp = c(3, 4),   # Specify components to plot
+          ind.names = TRUE, # Show row names of samples
+          group = pca_wide$ID)
+```
+
+```{r}
+tidy_pca <- as_tibble(result.pca.multi[["x"]]) %>%
+  add_column(ID = pca_wide$ID, treatment = pca_wide$treatment) %>%
+  inner_join(biochem_meth) %>%
+  mutate(days = as_factor(days))
+
+```
+```{r}
+PCA_plot <- ggplot(data = tidy_pca, mapping = aes(x = PC1, y = PC2, label = ID, colour = treatment)) +
+  geom_label()
+
+
+PCA_plot + aes(size = glucose)
+```
+read_excel(sheet = sheet) %>% 

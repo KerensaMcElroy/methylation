@@ -1,0 +1,100 @@
+---
+title: "Methylation Database Generation"
+output:
+  html_document:
+    df_print: paged
+---
+
+Methylation data was collected by xxx and processed by xxx.
+**Collaborators:** Shannon Dillon, Tony Iaculo, xxx
+
+**Database approach being used due to large size of data.**
+
+This is an R Markdown Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+## Setup
+
+Import workflow adjusted from https://readxl.tidyverse.org/articles/readxl-workflows.html
+
+### Load libraries
+```{r message=FALSE}
+library(tidyverse)
+library(janitor)
+library(readxl)
+library(DBI)
+```
+
+### I/O paths
+```{r}
+meth_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means"
+csv_names <- list.files(path = meth_path, pattern = "*window_mean_.*.txt", full.names = TRUE)
+
+# Create a database connection
+con <- DBI::dbConnect(RSQLite::SQLite(), dbname = "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/meth_db.sqlite")
+```
+
+### Animal ID mapping
+Convert numeric IDs back to the animal IDs that were used for biochem data.
+```{r}
+#data for mapping between different animal IDs
+map_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/processed_data/Sample  key.xlsx" 
+
+map_path %>%
+  read_excel() %>% 
+  write_csv("data/sample_key.csv") #generate csv for future quick view
+
+animal_map <- read_excel(map_path, col_names = TRUE) %>%
+  select(`window mean ID`, `Animal ID`) %>%
+  distinct() %>%
+  drop_na() %>%
+  clean_names() %>%
+  mutate(window_mean_id = as.character(window_mean_id),
+         animal_id = as.character(animal_id))
+animal_map
+```
+
+### Methylation data
+Creating a function to add individual csv window files into the database. 
+```{r warning=FALSE}
+add_csv_db <- function(file, path, db) {
+  file_name <- basename(file)
+  print(file_name)
+  parts <- str_split(file_name, "_", simplify = TRUE)
+  treatment <- as.character(str_extract(parts[3], "\\d+"))
+  chromosome <- as.character(str_extract(parts[4], "\\d+"))
+  ID <- as.character(str_extract(parts[5], "\\d+"))
+
+  # Get animal ID from animal_map
+  animal_id <- animal_map$animal_id[match(ID, animal_map$window_mean_id)]
+  
+  positions <- read_csv(file.path(path, paste0("window_positions_chrm", chromosome, ".csv")), 
+                        na = "nan", 
+                        col_names = TRUE) %>%
+    mutate(ID = animal_id) %>%
+    rownames_to_column()
+
+  d <- read_csv(file, col_types = "d", na = "nan", col_names = "methylation") %>%
+    mutate(ID = animal_id) %>%
+    mutate(chromosome = chromosome) %>%
+    mutate(treatment = case_when(
+      treatment == "3" ~ "pens",
+      treatment == "2" ~ "hot",
+      treatment == "1" ~ "pre"
+    )) %>%
+    rownames_to_column() %>%
+    full_join(positions) %>%
+    drop_na(methylation) %>%
+    dplyr::select(-rowname)
+  
+  dbWriteTable(db, "meth_data", d, append = TRUE)
+}
+```
+Iterate over the csv files and process them
+```{r message = FALSE, results='markup'}
+walk(csv_names, add_csv_db, path = meth_path, db = con)
+```
+Disconnect from the SQLite database
+```{r message = FALSE}
+dbDisconnect(con)
+```
+Further data analysis and processing in scripts biochem.Rmd and PCA.Rmd
