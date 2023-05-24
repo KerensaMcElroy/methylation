@@ -10,7 +10,7 @@ ui <- fluidPage(
   titlePanel("Chromosome Data Analysis"),
   sidebarLayout(
     sidebarPanel(
-      numericInput("chromosome", "Chromosome:", value = 29, min = 1, max = 29),
+      numericInput("chromosome", "Chromosome:", value = 29, min = 1, max = 99),
       actionButton("runAnalysisBtn", "Run Analysis")
     ),
     mainPanel(
@@ -63,33 +63,9 @@ server <- function(input, output) {
       full_join(features, by = 'ID') %>%
       pivot_wider(names_from = 'biochem', values_from = 'value')
     
-    # connect to methylation database
-    con <- DBI::dbConnect(RSQLite::SQLite(), dbname = "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/meth_db.sqlite")
-    # select data for given chromosome
-    query <- paste0("SELECT methylation, ID, treatment, winMin FROM your_table WHERE chromosome =", chromosome)
-    
-    pca_data <- dbGetQuery(con, query) %>%
-      as_tibble()
-    
-    dbDisconnect(con)
-    
-    pca_wide <- pca_data %>% pivot_wider(values_from = "methylation", names_from = "winMin")
-    pca_wide <- pca_wide %>% 
-      dplyr::select(where(~ mean(is.na(.)) < 0.2))
-    
-    var_df <- pca_wide %>% 
-      dplyr::select(-ID, -treatment) %>%
-      summarise(across(.cols = everything(), ~ var(.x, na.rm = TRUE))) %>% 
-      pivot_longer(cols = everything()) %>% 
-      arrange(desc(value)) %>%
-      mutate(order = 1:n())
-    
-    var_1000 <- var_df %>%
-      slice_max(n = 1000, order_by = value)
-    
-    for_pca <- pca_wide %>% 
-      dplyr::select(var_1000$name)
-    tidy_pca <- as_tibble(result.pca.multi[["x"]]) %>%
+   
+
+^    tidy_pca <- as_tibble(result.pca.multi[["x"]]) %>%
       add_column(ID = pca_wide$ID, treatment = pca_wide$treatment) %>%
       inner_join(biochem) %>%
       mutate(days = as_factor(days))
@@ -97,17 +73,7 @@ server <- function(input, output) {
     tidy_pca_data(tidy_pca)  # Update the reactive value
   }
   
-  # Render histogram plot
-  output$histPlot <- renderPlot({
-    hist_plot <- var_df %>% 
-      mutate(included = case_when(order <= 1000 ~ TRUE, .default = FALSE)) %>%
-      ggplot(aes(x = value, fill = included)) +
-      geom_histogram(bins = 100) +
-      scale_fill_brewer(palette = "Accent")
-    
-    hist_plot
-  })
-  
+
   # Update axis and color feature choices when tidy_pca is available
   observeEvent(tidy_pca_data(), {
     output$xAxis <- renderUI({
