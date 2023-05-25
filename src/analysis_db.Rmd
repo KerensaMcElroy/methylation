@@ -40,13 +40,37 @@ tbl(data, "meth_data") %>%
 ```
 ```{r}
 data <- data %>%
-  separate(file_name, sep = '_', into = c("treatment","chromosome","ID"), fill="left") %>%
-  mutate(ID = str_extract(ID, "[0-9]+")) %>%
-  mutate(chromosome = str_extract(chromosome, "[0-9]+")) %>%
-  mutate(treatment = case_when(
-    treatment == "HE3" ~ "recovery",treatment == "HE2" ~ "hot",
-    treatment == "HE1" ~ "pre",
-    )) 
+
 ```
 
+```{r}
+con <- dbConnect(drv = RSQLite::SQLite(), # give me a SQLite connection
+        dbname = "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/meth_db.sqlite")
+```
+```{r}
+summary(con)
+dbListTables(con)
+dbListFields(con, # Reach into my connection and ...
+      "meth_data") 
+```
+```{r}
+res <- dbSendQuery(con, "SELECT * FROM meth_data LIMIT 3")
+dbFetch(res)
+```
+```{r}
+dbClearResult(res)
+```
+```{r}
+tbl(con, "bakers")
+```
+
+```{r}
+
+tbl(con, 'meth_data') %>%
+  mutate(treatment = case_when(
+    treatment == "3" ~ "recovery",
+    treatment == "2" ~ "hot",
+    treatment == "1" ~ "pre"
+    ))
+```
 
