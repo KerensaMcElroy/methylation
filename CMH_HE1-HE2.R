@@ -9,11 +9,11 @@ chr <- 29
 chr <- as.integer(chr)
 
 # Array on HE and a values
-HE <- 1:3
+HE <- 1:2
 a <- 1:14
 
 # Read files and merge data
-merged_data <- expand_grid(HE = HE, a = a) %>%
+merged_data <- expand_grid(a = a, HE=HE) %>%
   mutate(file_name = paste0("window_sum.count_HE", HE, "_chrm", chr, "_ia", a, ".txt")) %>%
   rowwise() %>%
   mutate(data = list(fread(file.path(getwd(), file_name), header = FALSE))) %>%
@@ -26,9 +26,13 @@ merged_data <- expand_grid(HE = HE, a = a) %>%
   mutate(meth = total - non) %>%
   dplyr::select(-total, -file_name) %>%
   pivot_longer(cols = c(non, meth), names_to = "type", values_to = "value") %>%
-  pivot_wider(names_from=c(HE, a, type), values_from = value) %>%
-  dplyr::select(-row_number) 
-
+  pivot_wider(names_from=c(a, HE, type), values_from = value) %>%
+  mutate(chrm_win = paste0("chrm", chr, ".", row_number)) %>%
+  dplyr::select(-row_number) %>%
+  rename_with(~paste0("a", str_extract(.x, "\\d+"), "_", "HE", str_extract(.x, "(?<=_)\\d"), "_", str_extract(.x, "(?<=_)\\D+$")), -chrm_win) %>%
+  dplyr::select(chrm_win, everything())
+  
+# question for shannon ... is the chrm window just a sequential number or the start position? Can't work it out from your code.
 
 
 
