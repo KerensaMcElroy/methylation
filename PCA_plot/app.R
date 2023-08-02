@@ -19,8 +19,14 @@ ui <- fluidPage(
                                                                 "room", "sodium", "potassium", "chloride", "bicarb", "anion_gap", "Mg",
                                                                 "glucose", "BOHB", "cholesterol", "urea", "creatinine", "U2C_ratio", "Ca",
                                                                 "Phos", "Ca2P_ratio", "T_protein", "albumin", "globulins", "A2G_ratio",
-                                                                "bilirubin", "ALP", "AST", "CK", "GTT", "GLDH", "glutamine", "glutamate"), selected = "treatment")
+                                                                "bilirubin", "ALP", "AST", "CK", "GTT", "GLDH", "glutamine", "glutamate"), selected = "treatment"
     ),
+      selectInput("windowRange", "Window Range:", 
+                choices = c("1-5000", "5001-10000", "10001-15000", "15001-20000"),
+                selected = "1-5000")
+    ),
+  
+    
     mainPanel(
       plotOutput("pcaPlot", height = "80vh")
     )
@@ -35,9 +41,17 @@ server <- function(input, output) {
   color_features <- reactiveVal()
   explained_variance <- reactiveVal()
   
+  mapChoiceToWindowRange <- function(choice) {
+    switch(choice,
+           "1-5000"      = ".csv",
+           "5001-10000"  = "_5001_10000.csv",
+           "10001-15000" = "_10001_15000.csv",
+           "15001-20000" = "_15001-20000.csv"
+    )
+  }
   
-  # Perform the analysis for a given chromosome
-  analyzeData <- function(chromosome) {
+  # Perform the analysis for a given chromosome and window range
+  analyzeData <- function(chromosome, window_choice) {
     # Path to data
     data_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/biochem/CC7+8  biochem for Yutao 05_02_21.xlsx"
     
@@ -70,10 +84,12 @@ server <- function(input, output) {
       pivot_wider(names_from = 'biochem', values_from = 'value') %>%
       dplyr::filter(days %in% c(5, 12, 38))  # to match meth collection events
     
-    pca_data <- read_csv(paste0("results/tidy_pca_", chromosome, ".csv"))
+    window_range <- mapChoiceToWindowRange(window_choice)
+
+    pca_data <- read_csv(paste0("results/tidy_pca_", chromosome, window_range))
     pca_data <- pca_data %>% mutate(ID = as.character(ID))
     
-    explained_variance_data <- read_csv(paste0("results/explained_variance_", chromosome, ".csv"))
+    explained_variance_data <- read_csv(paste0("results/explained_variance_", chromosome, window_range))
     
     explained_variance(explained_variance_data)
     
@@ -120,10 +136,13 @@ server <- function(input, output) {
   })
   # Perform analysis when "Run Analysis" button is clicked
   observeEvent(input$runAnalysisBtn, {
-    analyzeData(input$chromosome)
+    analyzeData(input$chromosome, input$windowRange)
   })
   observeEvent(input$chromosome, {
-    analyzeData(input$chromosome)
+    analyzeData(input$chromosome, input$windowRange)
+  })
+  observeEvent(input$windowRange, {
+    analyzeData(input$chromosome, input$windowRange)
   })
   # Render PCA plot
   output$pcaPlot <- renderPlot({

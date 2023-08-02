@@ -3,16 +3,20 @@ library(data.table)
 library(tidyr)
 library(Deducer)
 
+# Try pooling by cohort.Sß
 # Set working directory
 setwd("/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_counts")
 
 # Select chromosome
 chr <- 29
 chr <- as.integer(chr)
+target_chrm_win <- "chrm29.390"
+
 
 # Array on HE and a values
 HE <- 1:2
 a <- 1:14
+
 
 # Read files and merge data
 merged_data <- expand_grid(a = a, HE=HE) %>%
@@ -44,17 +48,17 @@ merged_nonzero <- merged_data %>%
   filter(rowSums(across(-chrm_win, ~ . == 0)) != (ncol(.)-1)) 
 
 single_window_count <- merged_nonzero %>%
-  filter(chrm_win == "chrm29.2") %>%
+  filter(chrm_win == target_chrm_win) %>%
   pivot_longer(-chrm_win, names_to = c("a", "HE", "type"), names_sep = "_", values_to = "count") %>%
   mutate(count = as.integer(count))
 
 summarized_window_count <- single_window_count %>%
   mutate(a_group = ifelse(as.integer(substring(a, 2)) <= 7, "a1-a7", "a8-a14")) %>%
   group_by(HE, type, a_group) %>%
-  summarise(sum_count = sum(count))
-
-filtered_window_count_pool <- single_window_count_pool(merged_nonzero)
-
+  summarise(sum_count = sum(count), .groups = "drop") %>%
+  group_by(a_group) %>%
+  filter(!sum(sum_count == 0)) %>%
+  ungroup()
 
 #remove stratum (e.g. ia) where counts are not available for both types (HE_1/HE_2 or NM/M counts) - less likely to encounter this if pooling counts across multiple animals
 # Filter rows based on the conditions
@@ -63,9 +67,9 @@ filtered_window_count <- single_window_count %>%
   filter(!any(count == 0)) %>%
   ungroup()
 #check with shannon that I've understood this filtering correctly
+#question for shannon - should we do this, or should we set the zeros to one? In effect we're throwing away any windows where the chi-squared goes to infinity, and therefore potentially the most significant results.
 
-#shannons next step is to remove the counts? (counts to cases)
-# get number of remaining animals...
+#grouping may be problematic due to batch effect
 
 countsToCases<- function(x, countcol = "count") {
   x %>%
@@ -74,48 +78,78 @@ countsToCases<- function(x, countcol = "count") {
 
 filtered_window_cases <- countsToCases(filtered_window_count)
 summarized_window_cases <- countsToCases(summarized_window_count, countcol = "sum_count")
-test <-contingency.tables(
-  row.vars=type,
-  col.vars=HE,
-  stratum.var=a_group,data=summarized_window_cases)
-test <- add.chi.squared(test)
-test <- add.likelihood.ratio(test)
-test <- add.mantel.haenszel(test)
 
-# View the filtered tibble
-results = data.frame(matrix(nrow = nrow(merged_nonzero),ncol=32), stringsAsFactors=FALSE)
-names(results) = c("chrm.window", " Chisq_ia1", " Chisq_p_ia1", " Chisq_ia2", " Chisq_p_ia2", " Chisq_ia3", " Chisq_p_ia3", " Chisq_ia4", " Chisq_p_ia4", " Chisq_ia5", " Chisq_p_ia5", " Chisq_ia6", " Chisq_p_ia6", " Chisq_ia7", " Chisq_p_ia7", " Chisq_ia8", " Chisq_p_ia8", " Chisq_ia9", " Chisq_p_ia9", " Chisq_ia10", " Chisq_p_ia10", " Chisq_ia11", " Chisq_p_ia11", " Chisq_ia12", " Chisq_p_ia12", " Chisq_ia13", " Chisq_p_ia13", " Chisq_ia14", " Chisq_p_ia14", " CMH_st", " CMH_p", " CMH_estimate")
+num_strata <- summarized_window_cases %>%
+  distinct(a_group) %>%
+  n_distinct()
 
-perform_contingency_tests <- function(counts_matrix, temp_data_transposed) {
-  test <- tryCatch({
-    contingency_tables(
-      row.vars = d(type),
-      col.vars = d(ENV),
-      stratum.var = ia,
-      data = temp_data_transposed
-    ) %>%
-      add.chi.squared() %>%
-      add.likelihood.ratio() %>%
-      add.mantel.haenszel()
-  }, error = function(e) {
-    NULL
-  })
+tryCatch({
+  test <- contingency.tables(
+    row.vars = type,
+    col.vars = HE,
+    stratum.var = a_group,
+    data = summarized_window_cases
+  )
   
-  if (is.null(test)) {
-    return(list(Chisq_ia = 0, Chisq_p_ia = 0))
+  test <- add.chi.squared(test)
+  test <- add.likelihood.ratio(test)
+  test <- add.mantel.haenszel(test)
+  
+}, warning = function(w) {
+  # Handling the warning
+  # Print the warning message and chrm_win value
+  warning(paste("Warning: test failed in chrm_win:", chrm_win))
+  warning(w)
+})
+  
+  if (inherits(test, "try-error")) {
+    # Error occurred, assign 0 to chi_squared and p_value for all strata
+    chi_squared <- rep(0, num_strata)
+    p_value <- rep(0, num_strata)
+  } else {
+    # Extract chi-squared and p-value for each stratum
+    chi_squared <- vector("numeric", length = num_strata)
+    p_value <- vector("numeric", length = num_strata)
+    
+    for (i in 1:num_strata) {
+      tryCatch({
+        chi_squared[i] <- as.numeric(test$`type by ENV`$tests$`Chi Squared`[i][[1]]$asymptotic$statistic)
+        p_value[i] <- test$`type by ENV`$tests$`Chi Squared`[i][[1]]$asymptotic$p.value
+        
+      }, error = function(e) {
+        # Handling the error for individual stratum
+        # Assign 0 to chi_squared and p_value for the current stratum
+        chi_squared[i] <- 0
+        p_value[i] <- 0
+      })
+    }
   }
   
-  p_values <- map_dbl(test$"type by ENV"$tests$"Chi Squared", ~ .x$asymptotic$p.value)
-  
-  list(
-    Chisq_ia = map_dbl(test$"type by ENV"$tests$"Chi Squared", ~ .x$asymptotic$statistic),
-    Chisq_p_ia = ifelse(is.nan(p_values), 0, p_values)
-  )
-}
+  result <- list(Chisq_ia = chi_squared, Chisq_p_ia = p_value)
 
-# Convert counts to cases
-countsToCases <- function(x, countcol = "counts") {
-  idx <- rep.int(seq_len(nrow(x)), x[[countcol]])
-  x[[countcol]] <- NULL
-  x[idx, ]
+  
+#insert 0 if CMH can't be computed
+isEmpty <- function(x) {
+   return(length(x)==0)
 }
+  
+CMH_st <- as.numeric(test$"type by ENV"$cross.strata.tests$"Mantel-Haenszel"[1][[1]]$asymptotic$statistic)
+if (isEmpty(CMH_st)){
+  CMH_st = 0
+}
+CMH_p <- (test$"type by ENV"$cross.strata.tests$"Mantel-Haenszel"[1][[1]]$asymptotic$p.value)
+if (isEmpty(CMH_p)){
+  CMH_p = 0
+}
+CMH_estimate <- as.numeric(test$"type by ENV"$cross.strata.tests$"Mantel-Haenszel"[1][[1]]$asymptotic$estimate)
+if (isEmpty(CMH_estimate)){
+  CMH_estimate = 0
+}
+  
+# View the filtered tibble
+#results = data.frame(matrix(nrow = nrow(merged_nonzero),ncol=32), stringsAsFactors=FALSE)
+#names(results) = c("chrm.window", " Chisq_ia1", " Chisq_p_ia1", " Chisq_ia2", " Chisq_p_ia2", " Chisq_ia3", " Chisq_p_ia3", " Chisq_ia4", " Chisq_p_ia4", " Chisq_ia5", " Chisq_p_ia5", " Chisq_ia6", " Chisq_p_ia6", " Chisq_ia7", " Chisq_p_ia7", " Chisq_ia8", " Chisq_p_ia8", " Chisq_ia9", " Chisq_p_ia9", " Chisq_ia10", " Chisq_p_ia10", " Chisq_ia11", " Chisq_p_ia11", " Chisq_ia12", " Chisq_p_ia12", " Chisq_ia13", " Chisq_p_ia13", " Chisq_ia14", " Chisq_p_ia14", " CMH_st", " CMH_p", " CMH_estimate")
+
+results = data.frame(matrix(nrow = dimJoin[1],ncol=8), stringsAsFactors=FALSE)
+names(results) = c("chrm.window", " Chisq_ia1", " Chisq_p_ia1", " Chisq_ia2", " Chisq_p_ia2", " CMH_st", " CMH_p", " CMH_estimate")
+

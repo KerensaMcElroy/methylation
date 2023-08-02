@@ -1,0 +1,165 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+### Load libraries
+```{r echo=T, results='hide', message=F}
+library(tidyverse)
+library(readxl)
+library(janitor)
+library(fs)
+knitr::opts_knit$set(root.dir = "/home/mce03b/R/methylation")
+```
+### Path to data
+```{r echo=T, results='hide'}
+data_path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/biochem/CC7+8  biochem for Yutao 05_02_21.xlsx"
+```
+### Cache CSV snapshot for each sheet
+Note: CSV snapshot makes inspecting the data and problem solving easy to do from the terminal rather than having to have excel open somewhere. 
+
+Defining function to read excel sheet and write to csv
+```{r echo=T, results='hide'}
+read_then_csv <- function(sheet, path) {
+  path %>%
+    read_excel(sheet = sheet) %>% 
+    write_csv(paste0("data/biochem-", sheet, ".csv"))
+}
+```
+Map on to individual sheets
+```{r echo=T, results='hide', message=F}
+data_path %>% 
+  excel_sheets() %>% 
+  set_names() %>% 
+  purrr::map(read_then_csv, path = data_path) %>%
+  invisible()
+```
+
+We need to turn all this into a tidy data frame. Columns need to be ID, room, cohort, day, treatment, and biochem features. Starting by using the cheat sheet to get ID, cohort, and room. 
+```{r echo=T, warning=F, message=F}
+features <- data_path %>%
+  read_excel(col_names = FALSE) %>% 
+  dplyr::select(-1:-2) %>% 
+  slice(1:3) %>%
+  t() %>%
+  as_tibble() %>%
+  rename('ID' = 1, 'cohort' = 2, 'room' = 3) %>%
+  mutate_if(is.numeric, as.character)
+print(features)
+```
+
+Now, we read in the first row of a single biochem sheet so that we can get the column names. This is necessary because due to the formatting of the excel sheets, we need to exclude the first few rows, which discards the column names.
+```{r echo=T, results='hide'}
+col_names <- read_excel(path=data_path, sheet=2,range="A1:Y1",col_names=TRUE)
+```
+Now we: 
+
+* select the data range on each sheet and use map_df to combine into a single data frame,
+* discard 'cheat sheet' from the list of names,
+* use mutate to add a treatment column,
+* use pivot and join functions to format resulting tibble
+```{r}
+biochem <- data_path %>%
+  excel_sheets() %>%
+  set_names() %>% 
+  keep(names(.)!="cheat sheet") %>%
+  map_df(~ read_excel(path = data_path, sheet = .x, range =  anchored("A4", c(13, 25)), na='.', col_names=names(col_names)), .id = "biochem") %>%
+  rename('days' = 'ID') %>%
+  mutate(treatment = case_when(
+    days > 17 ~ "pens",
+    days > 12 ~ "recovery",
+    days > 5  ~ "hot",
+    days <=5 ~ "pre"
+    )) %>%
+  pivot_longer(cols = 3:26, names_to = 'ID') %>%
+  full_join(features, by = 'ID') %>%
+  pivot_wider(names_from = 'biochem', values_from = 'value')
+print(biochem)
+```
+## Exploration and visualisation
+
+### Missing data
+Are there any biochem values with unusual quantities of missing values? Not particularly...
+
+```{r}
+biochem %>% summarise(across(everything(), ~ sum(is.na(.))))
+```
+```{r}
+biochem %>% group_by(days) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(days) %>% summarise(across(everything(), ~ n()))
+
+```
+```{r}
+biochem %>% group_by(room) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(room) %>% summarise(across(everything(), ~ n()))
+
+```
+```{r}
+biochem %>% group_by(cohort) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(cohort) %>% summarise(across(everything(), ~ n()))
+```
+```{r}
+biochem %>% group_by(treatment) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(treatment) %>% summarise(across(everything(), ~ n()))
+```
+
+```{r}
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ n()))
+```
+It appears to be individual animals accounting for the majority of missing data, specifically IDs 6, 15, 23, and 27. Will exclude from further analysis.
+
+```{r}
+biochem <- biochem %>%
+  dplyr::filter(!ID %in% c('6','15','23','27'))
+```
+Check it's worked:
+```{r}
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ sum(is.na(.))))
+biochem %>% group_by(ID) %>% summarise(across(everything(), ~ n()))
+```
+Looks good.
+
+### Visual exploration
+
+mutate treatment so it displays in correct order on plots
+```{r}
+biochem <- biochem %>%  mutate(treatment = fct_reorder(treatment, days, .fun='median'))
+```
+
+```{r}
+jitter_plots <- function(x, y) {
+     ggplot(biochem, aes(x = .data[[x]], y = .data[[y]], color=cohort) ) +
+      geom_jitter(height=0, width=.2) +
+      theme_bw()
+}
+```
+
+
+```{r}
+biochems <- biochem %>%
+  dplyr::select(!c("ID","days","treatment","room","cohort")) %>%
+  names()
+
+j_plots = purrr::map(biochems, ~jitter_plots("treatment", .x) )
+j_plots
+```
+
+```{r plot.show=TRUE}
+jitter_plots("treatment", "A2G_ratio")
+```
+This needs checking out. Different measurement approach for the two cohorts?
+
+### save cleaned and consolidated biochem data to file
+```{r}
+if (!dir_exists('results')) {
+  dir_create('results')
+}
+
+file_path <- path("results", "biochem_clean.csv")
+write_csv(biochem, file_path)
+```
