@@ -1,49 +1,277 @@
 ---
 title: "Anova analysis on biochem data."
-output: html_notebook
+output:
+  html_document:
+    df_print: paged
 ---
 
-Anova to quantify effect of treatment on biochemical data, following on from visualisation.
+Anova to quantify effect of treatment on biochemical data.
 
-### Load libraries
+## Load libraries
 ```{r setup, include=FALSE}
-library(ggplot2)
-library(ggpubr)
 library(tidyverse)
+library(rstatix)
 library(broom)
 library(fs)
+library("viridis")
+library(htmltools)
+library(knitr)
+library(ggpubr)
+library(emmeans)
+
 knitr::opts_knit$set(root.dir = "/home/mce03b/R/methylation")
-
-
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo=FALSE) 
 ```
 
-### Read in biochem data
-```{r}
+## Read in biochem data
+```{r, echo=FALSE}
 file_path <- path("results", "biochem_clean.csv")
-biochem_tibble <- read_csv(file_path) %>%
+
+biochem <- read_csv(file_path) %>%
   mutate(treatment = as.factor(treatment),
          cohort = as.factor(cohort),
          room = as.factor(room),
          ID = as.factor(ID),
          days=as.integer(days))
-        
-```
-```{r}
-model <- aov(sodium ~ treatment + cohort + room, data = biochem_tibble)
-summary(one_way)
-```
-```{r}
-par(mfrow=c(2,2))
-plot(model)
-par(mfrow=c(1,1))
-```
-```{r}
-tukey.two.way<-TukeyHSD(model)
 
-tukey.two.way
+# reorder treatment so it displays correctly in plots
+biochem <- biochem %>%  mutate(treatment = fct_reorder(treatment, days, .fun='median'))
+```    
+
+## Summary statistics and visualisation
+
+## Results {.tabset .tabset-fade}
+
+### Statistics
+```{r}
+biochem_summary <- biochem %>%
+  group_by(treatment) %>%
+  get_summary_stats(sodium, type = "mean_sd")
+
+# Print the summary table
+print(biochem_summary)
 ```
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+### Room
+```{r}
+ggplot(biochem, aes(x = treatment, y = sodium, color = room)) +
+  geom_jitter(height = .2, width = .2, alpha = .7) +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  theme_bw()
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+### Cohort
+```{r}
+## Second
+ggplot(biochem, aes(x = treatment, y = sodium, color = cohort)) +
+  geom_jitter(height = .2, width = .2) +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  theme_bw()
+```
+
+### Boxplot
+```{r}
+ggboxplot(biochem, x = "treatment", y = "sodium") + 
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  scale_fill_viridis(discrete = TRUE) 
+```
+
+## Check assumptions
+```{r}
+model  <- lm(sodium ~ treatment, data = biochem)
+```
+## Results {.tabset .tabset-fade}
+
+### qqplot
+Testing for normality
+```{r}
+ggqqplot(residuals(model)) #normality
+print("Shapiro test")
+shapiro_test(residuals(model)) #normality
+```
+
+### variance
+Testing for homogeneity of variance
+```{r}
+plot(model, 1) #homogeneity of variance
+print("Levene test")
+biochem %>% levene_test(sodium ~ treatment) #homogeneity of variance
+```
+
+## One-way anova
+Summary plot
+```{r}
+residuals <- biochem %>% anova_test(sodium ~ treatment)
+pairwise_comp <- biochem %>% tukey_hsd(sodium ~ treatment)
+
+pairwise_plot <- pairwise_comp %>% add_xy_position(x = "treatment")
+ggboxplot(biochem, x = "treatment", y = "sodium") +
+  stat_pvalue_manual(pairwise_plot, hide.ns = TRUE) +
+  labs(
+    subtitle = get_test_label(residuals, detailed = TRUE),
+    caption = get_pwc_label(pairwise_plot)
+    )
+```
+
+## Results {.tabset .tabset-fade}
+
+### Residuals
+One-way anova results
+```{r}
+print(residuals)
+```
+
+### Pairwise
+Pairwise comparison (tukey)
+```{r}
+print(pairwise_comp)
+```
+
+
+## Two-way analysis
+
+## Summary statistics
+
+Grouped by cohort:
+
+## Results {.tabset .tabset-fade}
+
+### Stats 
+```{r}
+biochem %>%
+  group_by(treatment, cohort) %>%
+  get_summary_stats(sodium, type = "mean_sd")
+```
+
+### Plot
+```{r}
+ggboxplot(biochem, x = "treatment", y = "sodium", color='cohort') +
+  scale_color_viridis(discrete = TRUE, option = "D") 
+```
+
+Grouped by room:
+
+## Results {.tabset .tabset-fade}
+
+### Stats
+```{r}
+biochem %>%
+  group_by(treatment, room) %>%
+  get_summary_stats(sodium, type = "mean_sd")
+```
+
+### Plot
+```{r}
+ggboxplot(biochem, x = "treatment", y = "sodium", color='room') +
+  scale_color_viridis(discrete = TRUE, option = "D") 
+```
+
+## Check assumptions
+```{r}
+model_cohort <- lm(sodium ~ treatment*cohort, data = biochem)
+model_room <- lm(sodium ~ treatment*room, data = biochem)
+```
+
+## Results {.tabset .tabset-fade}
+
+### qqplot_C
+Testing for normality in treatment*cohort model
+```{r}
+ggqqplot(residuals(model_cohort)) + ggtitle("Normality Plot")
+print('Shapiro test')
+shapiro_test(residuals(model_cohort)) #normality
+```
+
+### variance_C
+Testing homogeneity of variance in treatment*cohort model
+```{r}
+plot(model, 1)
+print("Levene test")
+biochem %>% levene_test(sodium ~ treatment*cohort)
+```
+
+### qqplot_R
+Testing for normality in treatment*room model
+```{r}
+ggqqplot(residuals(model_room)) + ggtitle("Normality Plot")
+print("Shapiro test")
+shapiro_test(residuals(model_room)) #normality
+```
+
+### variance_R
+Testing homogeneity of variance in treatment*cohort model
+```{r}
+plot(model, 1)
+print("Levene test")
+biochem %>% levene_test(sodium ~ treatment*room)
+```
+
+
+## Anova (two-way)
+
+Model treatment*cohort: 
+```{r}
+residuals_cohort <- biochem %>% anova_test(sodium ~ treatment*cohort)
+
+pwc_cohort <- biochem %>% 
+  group_by(cohort) %>%
+  emmeans_test(sodium ~ treatment, p.adjust.method = "bonferroni") 
+```
+
+## Results {.tabset .tabset-fade}
+
+### Plot
+```{r}
+pwc_cohort <- pwc_cohort %>% add_xy_position(x = "cohort")
+ggboxplot(biochem, x = "cohort", y = "sodium", color='treatment') +
+  scale_color_viridis(discrete = TRUE, option = "D") +  
+  stat_pvalue_manual(pwc_cohort, hide.ns = TRUE) +
+  labs(
+    subtitle = get_test_label(residuals_cohort, detailed = TRUE),
+    caption = get_pwc_label(pwc_cohort)
+    )
+```
+
+### residuals
+```{r}
+print(residuals_cohort)
+```
+
+### Pairwise
+```{r}
+print(pwc_cohort)
+```
+
+Model treatment*room: 
+
+```{r}
+residuals_room <- biochem %>% anova_test(sodium ~ treatment*room)
+pwc_room <- biochem %>% 
+  group_by(room) %>%
+  emmeans_test(sodium ~ treatment, p.adjust.method = "bonferroni") 
+```
+
+## Results {.tabset .tabset-fade}
+
+### Plot
+```{r}
+pwc_room <- pwc_room %>% add_xy_position(x = "room")
+ggboxplot(biochem, x = "room", y = "sodium", color='treatment') +
+  scale_color_viridis(discrete = TRUE, option = "D") +  
+  stat_pvalue_manual(pwc_room, hide.ns = TRUE) +
+  labs(
+    subtitle = get_test_label(residuals_room, detailed = TRUE),
+    caption = get_pwc_label(pwc_room)
+    )
+```
+
+### Residuals
+```{r}
+print(residuals_room)
+```
+
+### Pairwise:
+```{r}
+print(pwc_room)
+```
+
