@@ -1,0 +1,53 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-08-09"
+---
+
+
+## Load libraries
+```{r setup}
+library(tidyverse)
+library(rstatix)
+library(broom)
+library(fs)
+library("viridis")
+library(htmltools)
+library(knitr)
+library(ggpubr)
+library(emmeans)
+
+knitr::opts_knit$set(root.dir = "/home/mce03b/R/methylation")
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo=FALSE) 
+```
+
+```{r read_data}
+## Read in biochem data
+file_path <- path("results", "biochem_clean.csv")
+
+biochem <- read_csv(file_path) %>%
+  mutate(treatment = as.factor(treatment),
+         cohort = as.factor(cohort),
+         room = as.factor(room),
+         ID = as.factor(ID),
+         days=as.integer(days))
+
+# reorder treatment so it displays correctly in plots
+biochem <- biochem %>%  mutate(treatment = fct_reorder(treatment, days, .fun='median'))
+```    
+
+```{r map_var}
+library(purrr)
+
+# List of variable names to iterate over
+biochems <- biochem %>%
+  dplyr::select(!c("ID","days","treatment","room","cohort")) %>%
+  names()
+print(biochems)
+
+# Iterate over the variable names and render the child document for each
+#walk(biochems, function(var_name) {
+#  rmarkdown::render('src/anova_db.Rmd', params = list(var_name = var_name))
+#})
+rmarkdown::render('src/anova_db.Rmd', params = list(var_name = 'sodium'))
+```
