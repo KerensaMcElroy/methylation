@@ -52,6 +52,8 @@ single_window_count <- merged_nonzero %>%
   pivot_longer(-chrm_win, names_to = c("a", "HE", "type"), names_sep = "_", values_to = "count") %>%
   mutate(count = as.integer(count))
 
+# to do - summarise by combination of room and cohort. Will need to process from biochem and sample_key. Also try summarising only by cohort.
+# doesn't make sense to group like this by a1-a7 and a8-a14
 summarized_window_count <- single_window_count %>%
   mutate(a_group = ifelse(as.integer(substring(a, 2)) <= 7, "a1-a7", "a8-a14")) %>%
   group_by(HE, type, a_group) %>%
@@ -62,10 +64,24 @@ summarized_window_count <- single_window_count %>%
 
 #remove stratum (e.g. ia) where counts are not available for both types (HE_1/HE_2 or NM/M counts) - less likely to encounter this if pooling counts across multiple animals
 # Filter rows based on the conditions
+
 filtered_window_count <- single_window_count %>%
+  group_by(a, HE) %>%
+  mutate(
+    sum_type = sum(count[type == "meth" | type == "non"])
+  ) %>%
+  ungroup() %>%
+  group_by(a, type) %>%
+  mutate(
+    sum_HE = sum(count[HE == "HE1" | HE == "HE2"])
+  ) %>%
+  ungroup() %>%
   group_by(a) %>%
-  filter(!any(count == 0)) %>%
-  ungroup()
+  filter(all(sum_type != 0) && all(sum_HE != 0)) %>%
+  ungroup() %>%
+  dplyr::select(-sum_type, -sum_HE)
+
+ 
 #check with shannon that I've understood this filtering correctly
 #question for shannon - should we do this, or should we set the zeros to one? In effect we're throwing away any windows where the chi-squared goes to infinity, and therefore potentially the most significant results.
 
