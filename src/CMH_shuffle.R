@@ -10,8 +10,9 @@ library(janitor)
 setwd("/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_counts")
 
 # Options for testing
-# chr <- as.integer(28)
-# target_chrm_win <- "chrm_28.1782210"
+
+ chr <- as.integer(28)
+ target_chrm_win <- "chrm_28.1782210"
 
 
 # Array on HE and a values
@@ -19,7 +20,7 @@ HE <- 1:2
 a <- 1:14
 cohort <- 7:8
 room <- 1:4
-pool <- "animal" #one of "cohort", "room", "animal". Determins the stratification for CMH test.
+pool <- "id" #one of "cohort", "room", "id". Determines the stratification for CMH test.
 
 # add room and cohort metadata to methylation data. 
 
@@ -48,7 +49,7 @@ animal_map <- key %>%
          id = as.character(id))
 
 metadata <- animal_map %>%
-  full_join(metadata, join_by(id == id)) 
+  left_join(metadata, join_by(id == id)) 
 
 # Helper function to filter and process counts
 window_counts <- function(single_window) {
@@ -85,26 +86,23 @@ counts_to_cases <- function(x, countcol = "count") {
 process_chrm_window <- function(target_win, merged_nonzero) {
   single_window <- merged_nonzero %>%
     filter(chrm_win == target_win)
-  
   filtered_window_cases <- window_counts(single_window) %>%
     filter_counts() %>%
-    counts_to_cases()
-  
-  total_mean <- mean(sapply(test$"type by HE", function(pool_value) if("total" %in% names(pool_value) && is.numeric(pool_value$total)) pool_value$total else 0))
-  
+    counts_to_cases() 
+
   # Define default values
-  default_values <- c(
+  default_values <- data.frame(
     chrm_win = target_win,
     CMH_st = 0,
     CMH_p = 0,
     CMH_estimate = 0,
-    mean_counts = total_mean,
+    mean_counts = 0,
     winMin = single_window$winMin,
     winMax = single_window$winMax,
     chr = single_window$chr
   )
-  
   # check we have at least two strata and return without calculating CMH otherwise
+  num_strata <- length(unique(filtered_window_cases$pool))
   if (num_strata < 2) {
     return(as.data.frame(default_values))
   }
@@ -128,14 +126,15 @@ process_chrm_window <- function(target_win, merged_nonzero) {
   CMH_st <- coalesce(as.numeric(test$"type by HE"$cross.strata.tests$"Mantel-Haenszel"[1][[1]]$asymptotic$statistic), 0)
   CMH_p <- coalesce(test$"type by HE"$cross.strata.tests$"Mantel-Haenszel"[1][[1]]$asymptotic$p.value, 0)
   CMH_estimate <- coalesce(as.numeric(test$"type by HE"$cross.strata.tests$"Mantel-Haenszel"[1][[1]]$asymptotic$estimate), 0)
+  total_mean <- mean(sapply(test$"type by HE", function(pool_value) if("total" %in% names(pool_value) && is.numeric(pool_value$total)) pool_value$total else 0),)
   
-  return(as.data.frame(c(default_values, CMH_st = CMH_st, CMH_p = CMH_p, CMH_estimate = CMH_estimate)))
+  results <- default_values %>%
+    mutate(CMH_st = CMH_st, CMH_p = CMH_p, CMH_estimate = CMH_estimate, mean_counts = total_mean)
+  return(results)
 }
 
 # Define a function to read and merge files for a single chromosome
 merge_chrm <- function(a, HE, chrm, metadata) {
-  path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/window_positions_chrm"
-  win_pos <- read_csv(paste0(path, chrm, ".csv"))
   merged_data <- expand_grid(a = a, HE=HE) %>%
     mutate(file_name = paste0("window_sum.count_HE", HE, "_chrm", chrm, "_ia", a, ".txt")) %>%
     rowwise() %>%
@@ -155,7 +154,7 @@ merge_chrm <- function(a, HE, chrm, metadata) {
   return(merged_data)
 }
 
-
+#helper function to randomly shuffle data. Keeps meth and non-meth together and shuffles relative to everything else.
 shuffle_data <- function(merge_data) {
   shuffle <- sample(nrow(merge_data)) 
   shuffled_data <- chrm_data %>%
@@ -163,107 +162,45 @@ shuffle_data <- function(merge_data) {
       non = non[shuffle],
       meth = meth[shuffle]
     )
+  return(shuffled_data)
 }
 
-#process each chromosome in turn
-for (chrm in 1:29) {
-  # Read files and merge data
+#helper function to pool based on stratification (id, room, cohort)
+#to do ... move some of the metadata joining out of here.
 
-    group_by(!!sym(pool), HE, row_number) %>%
+pool_data <- function(data) {
+  path <- "/datasets/work/af-mlai-bio/work/Heat_Stress_Use-case/users/DIL041/window_read_means/window_positions_chrm"
+  win_pos <- read_csv(paste0(path, chrm, ".csv"))
+  pooled <- data %>%
+    group_by(!!sym(pool), HE, win_num) %>%
     summarise(across(c(non, meth), \(x) sum(x, na.rm = TRUE))) %>%
-    print() %>%
     pivot_longer(cols = c(non, meth), names_to = "type", values_to = "value") %>%
     pivot_wider(names_from=c(!!sym(pool), HE, type), values_from = value) %>%
-    mutate(chrm_win = paste0("chrm_", chrm, ".", row_number)) %>%
+    mutate(chrm_win = paste0("chrm_", chrm, ".", win_num)) %>%
     left_join(win_pos, join_by(chrm_win == chrm.window)) %>%
     mutate(chr = as.character(chrm)) %>%
-    dplyr::select(-row_number) %>%
-    print() %>%
+    dplyr::select(-win_num) %>%
     rename_with(~paste0(pool, str_extract(.x, "\\d+"), "_", "HE", str_extract(.x, "(?<=_)\\d"), "_", str_extract(.x, "(?<=_)\\D+$")), c(-chrm_win, -winMin, -winMax, -chr)) %>%
     dplyr::select(chrm_win, chr, winMin, winMax, everything()) 
-
-  #remove rows with only zero entries
-  merged_nonzero <- merged_data %>%
-    filter(rowSums(across(c(-chrm_win, -winMin, -winMax, -chr), ~ . == 0)) != (ncol(.)-1)) 
+  return(pooled)
+}
   
-  results <- map_df(merged_nonzero[0:1000,]$chrm_win, process_chrm_window, merged_nonzero = merged_nonzero)
+
+#process each chromosome in turn
+for (chrm in 1:9) {
+  # Read files and merge data
+  chrm_data <- merge_chrm(a, HE, chrm, metadata) 
+  chrm_shuf <- shuffle_data(chrm_data) 
+  chrm_pool <- pool_data(chrm_shuf) 
+
+  #remove rows with only zero entries. Needs to be done here due to pooling.
+  columns_to_drop <- c("chrm_win", "winMin", "winMax", "chr")
+  chrm_nonzero <- chrm_pool %>%
+    filter(rowSums(across(-columns_to_drop, ~ . != 0)) > 0) 
+
+  results <- map_df(chrm_nonzero$chrm_win[1:100], process_chrm_window, merged_nonzero = chrm_nonzero) %>%
+    arrange(winMin)
+  
   
   write.csv(results, paste0("~/R/methylation/results/tables/cmh_",  chrm, "_", pool, ".csv"), row.names = FALSE)
-  
-  filtered_results <- results %>%
-    mutate(SNP=chrm_win) %>%
-    separate(chrm_win, into = c("chrm", "index"), sep = "\\.", convert = TRUE) %>%
-    mutate(chrm = as.numeric(gsub("[^0-9]", "", chrm))) %>%
-    filter(CMH_st > 0) %>%
-    mutate(corrected = p.adjust(CMH_p, method = "bonferroni")) %>%
-    mutate(CMH_estimate = na_if(CMH_estimate, Inf))
-  
-  # Find significant windows
-  highlighted_windows <- filtered_results %>%
-    filter(corrected < 0.05) %>%
-    pull(SNP)
-  
-  # manhattan plots for CMH statistic, estimate, and p-values
-  pdf(file = paste0("~/R/methylation/results/figures/", chrm, "_", pool, "_man_st.pdf"), width = 8, height = 5)
-  manhattan_st <- manhattan(
-    filtered_results,
-    chr = "chrm",  # Column containing chromosome information
-    bp = "winMin",  # Column containing base pair positions (if available, or set to NULL)
-    p = "CMH_st",  # Column containing CMH_p values
-    logp=FALSE,
-    ylim = c(0, max(filtered_results$CMH_st)*1.1),
-    suggestiveline = FALSE,
-    genomewideline = FALSE,
-    highlight = highlighted_windows,
-    main = "CMH_st",
-    ylab = "CMH statistic"
-  )
-  dev.off()
-  
-  pdf(file = paste0("~/R/methylation/results/figures/", chrm, "_", pool, "_man_est.pdf"), width = 8, height = 5)
-  manhattan_est <- manhattan(
-    filtered_results,
-    chr = "chrm",  # Column containing chromosome information
-    bp = "winMin",  # Column containing base pair positions (if available, or set to NULL)
-    p = "CMH_estimate",  # Column containing CMH_p values
-    logp=TRUE,
-    ylim = c(-2, 2),
-    suggestiveline = 0,
-    genomewideline = FALSE,
-    highlight = highlighted_windows,
-    main = "CMH_estimate",
-    ylab = "log odds ratio estimate"
-  )
-  dev.off()
-  
-  pdf(file = paste0("~/R/methylation/results/figures/", chrm, "_", pool, "_man_p.pdf"), width = 8, height = 5)
-  manhattan_p <- manhattan(
-    filtered_results,
-    chr = "chrm",  # Column containing chromosome information
-    bp = "winMin",  # Column containing base pair positions (if available, or set to NULL)
-    p = "CMH_p",  # Column containing CMH_p values
-    ylim = c(0, 30),
-    suggestiveline = FALSE,
-    genomewideline = FALSE,
-    highlight = highlighted_windows,
-    main = "raw p-values"
-  )
-  dev.off()
-  
-  scat_bp <- ggplot(filtered_results, aes(x = winMin, y = counts, colour = corrected < 0.05)) +
-    geom_point(aes(alpha = !corrected >= 0.05), size = 2) +
-    scale_colour_manual(values = c("TRUE" = "green", "FALSE" = "black"), guide = FALSE) +
-    guides(alpha = FALSE) 
-  ggsave(filename= paste0("~/R/methylation/results/figures/", chrm, "_", pool, "_scatter_bp.pdf"),plot=scat_bp, width = 10, height = 15)
-  scat_st <- ggplot(filtered_results, aes(x = CMH_st, y = counts, colour = corrected < 0.05)) +
-    geom_point(aes(alpha = !corrected >= 0.05), size = 2) +
-    scale_colour_manual(values = c("TRUE" = "green", "FALSE" = "black")) +
-    guides(alpha = FALSE) 
-  ggsave(filename= paste0("~/R/methylation/results/figures/", chrm, "_", pool, "_scatter_st.pdf"),plot=scat_st, width = 10, height = 10)
 }
-
-#todo - move plots to separate script
-#set up permutation
-#set up whole genome
-#set up sbatch job.
-
